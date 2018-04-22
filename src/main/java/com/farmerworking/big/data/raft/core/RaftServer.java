@@ -1,10 +1,12 @@
 package com.farmerworking.big.data.raft.core;
 
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.farmerworking.big.data.raft.core.communication.RaftRpcBaseData;
 import com.farmerworking.big.data.raft.core.communication.Sender;
+import com.farmerworking.big.data.raft.core.communication.SimpleSenderImpl;
+import com.farmerworking.big.data.raft.core.communication.VoteReplyData;
 import com.farmerworking.big.data.raft.core.events.RaftEvent;
 import com.farmerworking.big.data.raft.core.events.timeout.ElectionTimeoutEvent;
 import com.farmerworking.big.data.raft.core.events.rpc.HeartBeatEvent;
@@ -17,9 +19,6 @@ import com.farmerworking.big.data.raft.core.events.rpc.RequestVoteTimeoutEvent;
 import com.farmerworking.big.data.raft.core.timeout.managers.ElectionTimeoutManager;
 import com.farmerworking.big.data.raft.core.timeout.managers.HeartBeatTimeoutManager;
 import com.farmerworking.big.data.raft.core.timeout.managers.RpcTimeoutManager;
-import com.farmerworking.big.data.raft.core.timeout.tasks.ElectionTimeoutTask;
-import com.farmerworking.big.data.raft.core.timeout.tasks.HeartBeatTimeoutTask;
-import com.farmerworking.big.data.raft.core.timeout.tasks.RpcTimeoutTask;
 import com.google.common.collect.Maps;
 import com.google.common.eventbus.EventBus;
 import com.google.common.eventbus.Subscribe;
@@ -33,8 +32,8 @@ public class RaftServer {
     /**
      * immutable config
      */
-    private final Set<ServerMetaData> serverSet;
-    private final int serverId;
+    private final Map<Integer, ServerMetaData> serverMap;
+    private final ServerMetaData server;
 
     /**
      * communication layer
@@ -70,19 +69,19 @@ public class RaftServer {
      */
     private HeartBeatTimeoutManager heartBeatTimeoutManager;
 
-    public RaftServer(int serverId,
-                      Set<ServerMetaData> serverSet,
+    public RaftServer(ServerMetaData server,
+                      Map<Integer, ServerMetaData> serverMap,
                       Sender sender,
                       long heartBeatTimeout,
                       long electionTimeout,
                       long rpcTimeout,
                       int randomTimeoutRange) {
-        this.serverId = serverId;
-        this.serverSet = serverSet;
+        this.serverMap = serverMap;
+        this.server = server;
         this.sender = sender;
 
         this.voteResult = Maps.newHashMap();
-        this.eventBus = new EventBus();
+        this.eventBus = server.getEventBus();
 
         electionElectionTimeoutManager = new ElectionTimeoutManager(eventBus, electionTimeout, randomTimeoutRange);
         heartBeatTimeoutManager = new HeartBeatTimeoutManager(eventBus, heartBeatTimeout);
@@ -90,6 +89,13 @@ public class RaftServer {
     }
 
     public void initialize() {
+        /**
+         * use simple sender impl when sender is null;
+         */
+        if (sender == null) {
+            sender = new SimpleSenderImpl(serverMap, server);
+        }
+
         role = RaftServerRole.FOLLOWER;
         currentTerm = new AtomicLong(0);
         votedFor = VOTED_FOR_INIT_STATE;
@@ -104,7 +110,7 @@ public class RaftServer {
     private void handleElectionTimeoutEvent(ElectionTimeoutEvent event) {
         turnCandidate();
 
-        for(ServerMetaData server : serverSet) {
+        for(ServerMetaData server : serverMap.values()) {
             requestVote(server);
         }
     }
@@ -114,19 +120,19 @@ public class RaftServer {
         long term = event.getTerm();
 
         if (term < currentTerm.get()) {
-            sender.requestVoteReply(event.getServer(), event.getTraceId(), currentTerm.get(), false);
+            sender.requestVoteReply(event.getServer(), new VoteReplyData(event.getTraceId(), currentTerm.get(), false));
         } else if (term > currentTerm.get()) {
             turnFollower(term);
             handleRequestVoteEvent(event);
         } else {
             if (role == RaftServerRole.LEADER) {
-                sender.requestVoteReply(event.getServer(), event.getTraceId(), currentTerm.get(), false);
+                sender.requestVoteReply(event.getServer(), new VoteReplyData(event.getTraceId(), currentTerm.get(), false));
             } else if (votedFor == event.getServer().getServerId() || votedFor == VOTED_FOR_INIT_STATE) {
                  // rpc timeout and resend request vote request || has not vote yet
                 votedFor = event.getServer().getServerId();
-                sender.requestVoteReply(event.getServer(), event.getTraceId(), currentTerm.get(), true);
+                sender.requestVoteReply(event.getServer(), new VoteReplyData(event.getTraceId(), currentTerm.get(), true));
             } else {
-                sender.requestVoteReply(event.getServer(), event.getTraceId(), currentTerm.get(), false);
+                sender.requestVoteReply(event.getServer(), new VoteReplyData(event.getTraceId(), currentTerm.get(), false));
             }
         }
     }
@@ -176,8 +182,8 @@ public class RaftServer {
 
     @Subscribe
     private void handleHeartBeatTimeoutEvent(HeartBeatTimeoutEvent event) {
-        for(ServerMetaData server : serverSet) {
-            if (server.getServerId() == serverId) {
+        for(ServerMetaData server : serverMap.values()) {
+            if (server.getServerId() == this.server.getServerId()) {
                 continue;
             }
 
@@ -192,10 +198,10 @@ public class RaftServer {
             handleHeartBeatEvent(event);
         } else if (event.getTerm() < currentTerm.get()){
             // turn sender to follower
-            sender.heartBeatReply(event.getServer(), event.getTraceId(), currentTerm.get());
+            sender.heartBeatReply(event.getServer(), new RaftRpcBaseData(event.getTraceId(), currentTerm.get()));
         } else if (role == RaftServerRole.FOLLOWER) {
             electionElectionTimeoutManager.start();
-            sender.heartBeatReply(event.getServer(), event.getTraceId(), currentTerm.get());
+            sender.heartBeatReply(event.getServer(), new RaftRpcBaseData(event.getTraceId(), currentTerm.get()));
         } else { // candidate and term == currentTerm
             /**
              * 1. two node A and B get isolated
@@ -241,12 +247,12 @@ public class RaftServer {
     }
 
     @Subscribe
-    private void eventTracer(RaftEvent event) {
-        LOGGER.debug(event.toString());
+    private void eventTracer(RaftEvent event){
+        LOGGER.debug(this.server.getServerId() + ":" + event.toString());
     }
 
     private boolean hasMajorityVotes() {
-        return voteResult.values().stream().filter(vote -> vote).count() >= Math.ceil(serverSet.size());
+        return voteResult.values().stream().filter(vote -> vote).count() >= Math.ceil(serverMap.size());
     }
 
     private void turnCandidate() {
@@ -291,13 +297,13 @@ public class RaftServer {
         RequestVoteTimeoutEvent event = new RequestVoteTimeoutEvent(currentTerm.get(), server);
         rpcTimeoutManager.start(event);
 
-        sender.requestVote(server, event.getTraceId(), currentTerm.get());
+        sender.requestVote(server, new RaftRpcBaseData(event.getTraceId(), currentTerm.get()));
     }
 
     private void heartBeat(ServerMetaData server) {
         HeartBeatRequestTimeoutEvent event = new HeartBeatRequestTimeoutEvent(currentTerm.get(), server);
         rpcTimeoutManager.start(event);
 
-        sender.heartBeat(server, event.getTraceId(), currentTerm.get());
+        sender.heartBeat(server, new RaftRpcBaseData(event.getTraceId(), currentTerm.get()));
     }
 }

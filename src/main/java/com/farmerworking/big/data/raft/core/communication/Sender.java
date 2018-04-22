@@ -6,11 +6,11 @@ import com.farmerworking.big.data.raft.core.ServerMetaData;
  * Created by John on 18/4/13.
  */
 public interface Sender {
-    void requestVote(ServerMetaData server, String traceId, long term);
+    void requestVote(ServerMetaData target, RaftRpcBaseData data);
 
-    void requestVoteReply(ServerMetaData server, String traceId, long currentTerm, boolean isVoteGranted);
+    void requestVoteReply(ServerMetaData target, VoteReplyData data);
 
-    void heartBeat(ServerMetaData server, String traceId, long term);
+    void heartBeat(ServerMetaData target, RaftRpcBaseData data);
 
-    void heartBeatReply(ServerMetaData server, String traceId, long term);
+    void heartBeatReply(ServerMetaData target, RaftRpcBaseData data);
 }

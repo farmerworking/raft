@@ -1,6 +1,7 @@
 package com.farmerworking.big.data.raft.core.events.rpc;
 
 import com.farmerworking.big.data.raft.core.ServerMetaData;
+import com.farmerworking.big.data.raft.core.communication.VoteReplyData;
 import lombok.Data;
 import lombok.ToString;
 
@@ -9,8 +10,8 @@ import lombok.ToString;
 public class RequestVoteReplyEvent extends RpcEvent {
     boolean voteGranted;
 
-    public RequestVoteReplyEvent(long term, ServerMetaData server, boolean voteGranted) {
-        super(term, server);
-        this.voteGranted = voteGranted;
+    public RequestVoteReplyEvent(VoteReplyData data, ServerMetaData server) {
+        super(data.getTraceId(), data.getTerm(), server);
+        this.voteGranted = data.isVoteGranted();
     }
 }

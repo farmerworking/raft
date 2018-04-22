@@ -17,4 +17,10 @@ public abstract class RpcEvent implements RaftEvent {
         this.term = term;
         this.server = server;
     }
+
+    public RpcEvent (String traceId, long term, ServerMetaData server) {
+        this.traceId = traceId;
+        this.term = term;
+        this.server = server;
+    }
 }
